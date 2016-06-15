@@ -1,0 +1,142 @@
+<!doctype html>
+
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, minimum-scale=1.0, initial-scale=1.0, user-scalable=yes">
+
+    <script src="../../webcomponentsjs/webcomponents-lite.js"></script>
+    <script src="../../web-component-tester/browser.js"></script>
+    <script src="../../elasticsearch/elasticsearch.js"></script>
+    <script src="../../elastic.js/dist/elastic.js"></script>
+
+    <!-- Import the element to test -->
+    <link rel="import" href="../elastic-search.html">
+  </head>
+  <body>
+
+    <!-- Use the document as a place to set up your fixtures. -->
+    <test-fixture id="elastic-search-fixture">
+      <template>
+        <elastic-search index="mockads" elastic-types='["ad"]' results="{{data}}">
+        </elastic-search>
+      </template>
+    </test-fixture>
+    <test-fixture id="bad-index">
+      <template>
+        <elastic-search index="nothing-here" results="{{data}}">
+        </elastic-search>
+      </template>
+    </test-fixture>
+    <script>
+      suite('<elastic-search>', function() {
+
+        var es;
+        var esBad;
+        var client;
+        var body;
+
+        setup(function() {
+          esBad = fixture('bad-index');
+          es = fixture('elastic-search-fixture');
+          client = new elasticsearch.Client({host: 'http://localhost:9200'});
+          es.client = client;
+          es.sort = ejs.Sort("date").order("asc");
+          esBad.client = client;
+
+          body = ejs.Request().query(ejs.MatchAllQuery());
+        });
+
+        test('defines the index property', function () {
+          assert.equal(es.index, 'mockads');
+        });
+
+        test('defines the elastic-type property', function() {
+          assert.deepEqual(es.elasticTypes, ['ad']);
+        });
+
+        test('defines the page property', function () {
+          assert.equal(es.page, 1);
+        });
+
+        test('defines the pageSize property', function() {
+          assert.equal(es.pageSize, 25);
+        });
+
+        test('defines the loading property', function () {
+          assert.equal(es.loading, false);
+        });
+
+        test('defines the sort property', function () {
+          assert.deepEqual(es.sort.toJSON(), ejs.Sort("date").order("asc").toJSON());
+        });
+
+        test('buildRequest returns request with expected query and sort', function() {
+          var request = es.buildRequest();
+          var expectedReqVals = ejs.Request().query(ejs.MatchAllQuery()).sort(ejs.Sort('date').order('asc'));
+
+          assert.deepEqual(request.toJSON().query, expectedReqVals.toJSON().query);
+          assert.deepEqual(request.toJSON().sort, expectedReqVals.toJSON().sort);
+          assert.isUndefined(es.lastError);
+        });
+
+        test('submits body', function (done) {
+            es.addEventListener('results-changed', function (event) {
+              expect(es.results).to.be.an('object');
+              expect(es.results).to.not.be.empty;
+              expect(es.results).to.include.keys('hits');
+              expect(es.lastError).to.not.exist;
+              assert.equal(es.results.hits.hits[0]._type, 'ad');
+              done();
+            });
+            es.body = body;
+        });
+
+        test('build and submit query', function (done) {
+            es.addEventListener('results-changed', function (event) {
+              expect(es.results).to.be.an('object');
+              expect(es.results).to.not.be.empty;
+              expect(es.results).to.include.keys('hits');
+              expect(es.lastError).to.not.exist;
+              assert.equal(es.results.hits.hits[0]._type, 'ad');
+              assert.equal(es.results.hits.hits.length, 25);
+              expect(es.results.hits.total).to.be.at.least(30);
+              expect(es.results.hits.hits[0]._source.title.toLowerCase()).to.contain('ahab');
+              done();
+            });
+
+            es.query = ejs.MatchQuery('title', 'ahab');   
+        });
+
+        test('query not set', function(done) {
+          done();
+        });
+
+        test('when a search fails', function (done) {
+            esBad.addEventListener('last-error-changed', function (event) {
+              expect(esBad.lastError).to.exist;
+              done();
+            });
+            esBad.body = body;
+        });
+
+        test('aggregatons is initialized to a Map', function (done) {
+          expect(es.aggregations).to.be.an.instanceof(Map);
+          done();
+        });
+
+        test('store a few aggregations', function (done) {
+          var agg = ejs.TermsAggregation('city_agg').field('city').size(10);
+          es.aggregations.set('city_agg', agg);
+          agg = ejs.TermsAggregation('eye_color_agg').field('eye_color').size(10);
+          es.aggregations.set('eye_color_agg', agg);
+          expect(es.aggregations.size).to.be.equal(2);
+          expect(es.aggregations.has('city_agg')).to.be.true;
+          expect(es.aggregations.has('foo')).to.be.false;
+          done();
+        });
+      });
+    </script>
+
+  </body>
+</html>

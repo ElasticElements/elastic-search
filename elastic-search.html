@@ -1,0 +1,351 @@
+<link rel="import" href="../polymer/polymer.html">
+<link rel="import" href="../dig-common/dig-common.html">
+
+<!--
+        Element which provides a view of an Elasticsearch index, and coordinates
+        building and issuing queries using the elastic.js library.  Satellite
+        elements for query, filters, aggregation, sorting, and paging communicate
+        with this element to make changes to the index object, and to receive
+        results from queries that are issued to an elastic server instance.
+
+        If given a body object as input, this element makes AJAX request to
+        elasticsearch REST API.
+
+        Example:
+
+        <elastic-client
+            config='{"host": "http://localhost:9200"}'
+            client="{{esclient}}"
+            cluster-status="{{my-status}}">
+        </elastic-client>
+
+        <elastic-search
+            client="[[esclient]]"
+            index="ads"
+            elastic-types='["offer", "seller"]'
+            body='{"query": {"match_all": {}}}'
+            results="{{data}}"
+            lastError="{{error}}">
+        </elastic-search>
+
+@demo demo/index.html
+
+-->
+<script>
+    Polymer({
+        /* globals _, ejs*/
+        is: 'elastic-search',
+
+        properties: {
+            /**
+             * an instance of elasticsearch.Client which is connected to
+             * an elasticsearch server
+             */
+            client: {
+                type: Object
+            },
+
+            /**
+             * the elastic index (database name)
+             */
+            index: {
+                type: String
+            },
+
+            /**
+             * the elastic type (optional -- leave empty for all types)
+             */
+            elasticTypes: {
+                type: Array,
+                value: []
+            },
+
+            /**
+             * a fully specified elastic query.  Use this if you do not want
+             * the query body to be built by this element.
+             * (see https://www.elastic.co for search API)
+             *
+             * I body is non-null, then the basicSearch observer will be invoked.
+             *
+             */
+            body: {
+                type: Object,
+                notify: true
+            },
+
+            /**
+             * The elasticsearch query that should be invoked.
+             */
+            query: {
+                type: Object,
+                notify: true,
+                observer: '_resetPage'
+            },
+
+            /**
+             * an ejs.Sort() object to add to the request
+             */
+            sort: {
+                type: Object,
+                value: function() {
+                    return {};
+                },
+                notify: true
+            },
+
+            /**
+             * TODO: add comment
+             *
+             */
+            page: {
+                type: Number,
+                value: 1,
+                notify: true
+            },
+
+            /**
+             * TODO: add comment
+             *
+             */
+            pageSize: {
+                type: Number,
+                value: 25,
+                notify: true,
+                observer: '_resetPage'
+            },
+
+            /**
+             * TODO: add comment
+             *
+             */
+            pageCount: {
+                type: Number,
+                value: 1,
+                notify: true
+            },
+
+            /**
+             * TODO: add comment
+             *
+             */
+            filters: {
+                type: Array,
+                notify: true,
+                value: []
+            },
+
+            /**
+             * Map object collection that contains the name of the agg as the key, 
+             * and the elastic.js agg object as the value.
+             */
+            aggregations: {
+                type: Object,
+                notify: true,
+                value: function () { return new Map(); }
+            },
+
+            /**
+             * TODO: add comment
+             *
+             */
+            hightlight: {
+                type: Object,
+                notify: true
+            },
+
+            /**
+             * TODO: add comment
+             *
+             */
+            autoLoad: {
+                type: Boolean,
+                value: false,
+                notify: true
+            },
+
+            /**
+             * elastic search JSON results available after a successful query.
+             *
+             */
+            results: {
+                type: Object,
+                notify: true,
+                readOnly: true
+            },
+
+            resultCount: {
+                type: Number,
+                readOnly: true,
+                notify: true,
+                computed: 'resolveResultCount(results)'
+            },
+
+            /**
+             * either null or an error object that was returned from elastic search server.
+             */
+            lastError: {
+                type: Object,
+                notify: true,
+                readOnly: true
+            },
+
+            /**
+             *  indicate that search is in progress.
+             */
+            loading: {
+                type: Boolean,
+                value: false,
+                notify: true,
+                readOnly: true
+            },
+
+            activeFilter: {
+                type: Object
+            }
+        },
+
+        observers: [
+            'basicSearch(body, index, client)',
+            'search(client, elasticTypes, index, query, filters, aggregations, page, sort)'
+        ],
+
+        // ready: function() {
+        //     if (this.autoLoad) {
+        //     this.search();
+        //     }
+        // },
+
+
+        /**
+         * Reset page to 1.
+         */
+        _resetPage: function() {
+            this.page = 1;
+        },
+        /**
+         * Performs a server request via the elasticsearch client; invoked whenevery this.query is changed.
+         *
+         * @return {ElasticSearchResults}
+         */
+        basicSearch: function() {
+            if(!this.body) {
+                return;
+            }
+
+            var me = this;
+
+            this._setLoading(true);
+            this.client.search({
+                index: this.index,
+                type: this.elasticTypes,
+                body: this.body
+            })
+            .then(function(results) {
+                me._setResults(results);
+                me._setLastError(null);
+                me._setLoading(false);
+            })
+            .catch(function(err) {
+                me._setLastError(err);
+                me._setLoading(false);
+            });
+        },
+
+        search: function() {
+            var me = this;
+
+            this.getSearchPromise()
+            .then(function(results) {
+                me._setResults(results);
+                me._setLastError(null);
+                me._setLoading(false);
+            })
+            .catch(function(err) {
+                me._setLastError(err);
+                me._setLoading(false);
+            });
+        },
+        /**
+         * Builds an ejs.Request() object based on various inputs.
+         *
+         * @return {ElasticSearchRequest}
+         */
+        buildRequest: function() {
+            var me = this;
+            var request = ejs.Request();
+
+            if (this.query) {
+                request.query(this.query);
+            } else {
+                request.query(ejs.MatchAllQuery());
+            }
+
+            if(this.filters && this.filters.length > 0) {
+                this.activeFilter = this.buildFilter();
+                request.filter(this.activeFilter);
+            }
+
+            if(this.sort && !_.isEmpty(this.sort)) {
+                request.sort(this.sort);
+            }
+
+            this.aggregations.forEach(function (value, key) {
+                request.agg(value);
+            }, this.aggregations);
+            // _.each(this.aggregations, function(agg) {
+            //     request.agg(me.applyAggregationFilter(agg));
+            // });
+
+            // TODO: add logic to build entire request from properties.
+            // see: https://github.com/YousefED/ElasticUI/src/controllers/IndexController.ts
+            // for general idea
+            return request;
+        },
+
+        getSearchPromise: function() {
+            var request = this.buildRequest();
+            this._setLoading(true);
+            return this.client.search({
+                index: this.index,
+                type: this.elasticTypes,
+                size: this.pageSize,
+                from: this.pageSize * (this.page - 1),
+                body: request
+            });
+
+        },
+
+        resolveResultCount: function(results) {
+            if(results && results.hits && results.hits.total !== undefined) {
+                return results.hits.total;
+            } else if(results && results.hits && results.hits.hits) {
+                return results.hits.hits;
+            } else {
+                return 0;
+            }
+        },
+
+        applyAggregationFilter: function(agg) {
+            var aggName = Object.keys(agg.toJSON())[0];
+
+            // apply all filters except any matching this agg name
+            var filter = this.buildFilter(aggName);
+            var filteredAgg = ejs.FilterAggregation(aggName).filter(filter).agg(agg);
+            return filteredAgg;
+        },
+
+        buildFilter: function(excludeName) {
+            if(!excludeName) {
+                return ejs.AndFilter(this.filters);
+            }
+
+            var remainingFilters = [];
+            _.each(this.filters, function(filter) {
+                if(!filter.name() || filter.name() !== excludeName) {
+                    remainingFilters.push(filter);
+                }
+            });
+            return ejs.AndFilter(remainingFilters);
+        }
+    });
+</script>
